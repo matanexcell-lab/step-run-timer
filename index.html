@@ -21,6 +21,7 @@ h1{font-size:20px;font-weight:500;margin:0 0 14px;color:var(--mute)}
 .box{background:var(--card);border-radius:16px;padding:14px}
 .box .k{font-size:14px;color:var(--mute)}
 .box .v{font-size:32px;font-weight:700;font-variant-numeric:tabular-nums;direction:ltr;text-align:right}
+.box .sub{font-size:16px;font-weight:500;color:var(--ink);opacity:.85;font-variant-numeric:tabular-nums}
 .box.run .v{color:var(--run)}.box.walk .v{color:var(--walk)}
 .bar{height:14px;border-radius:7px;background:var(--card);overflow:hidden;margin-top:12px;display:flex}
 .bar i{display:block;height:100%;transition:width .5s}
@@ -47,8 +48,8 @@ h2{font-size:17px;margin:26px 0 8px}
   <div class="state" id="state"><div class="lbl" id="lbl">מוכן</div><div class="spm" id="spm">— צעדים/דקה</div></div>
 
   <div class="grid">
-    <div class="box run"><div class="k">זמן ריצה</div><div class="v" id="tRun">0:00</div></div>
-    <div class="box walk"><div class="k">זמן הליכה</div><div class="v" id="tWalk">0:00</div></div>
+    <div class="box run"><div class="k">זמן ריצה</div><div class="v" id="tRun">0:00</div><div class="sub" id="sRun">0 צעדים</div></div>
+    <div class="box walk"><div class="k">זמן הליכה</div><div class="v" id="tWalk">0:00</div><div class="sub" id="sWalk">0 צעדים</div></div>
     <div class="box"><div class="k">צעדים</div><div class="v" id="steps">0</div></div>
     <div class="box"><div class="k">זמן כולל</div><div class="v" id="tTot">0:00</div></div>
   </div>
@@ -82,6 +83,7 @@ const NAMES = {RUN:'רץ', WALK:'הולך', STOP:'עומד'};
 const SENS = [null, {t:2.2,n:'נמוכה מאוד'}, {t:1.6,n:'נמוכה'}, {t:1.1,n:'בינונית'}, {t:0.8,n:'גבוהה'}, {t:0.55,n:'גבוהה מאוד'}];
 
 let running = false, wake = null, timer = null;
+let stepsBy = {RUN:0, WALK:0}, pending = 0;
 let steps = [], totalSteps = 0, sec = {RUN:0, WALK:0, STOP:0}, startT = 0, lastTick = 0, cur = 'STOP';
 // signal processing state
 let lp = 9.8, avg = 9.8, above = false, peak = 0, lastStep = 0;
@@ -107,7 +109,7 @@ function onMotion(e) {
     if (d < sensT * 0.3) {           // falling back = one step completed
       above = false;
       if (now - lastStep > 250) {     // max ~240 steps/min, rejects double counts
-        lastStep = now; steps.push(now); totalSteps++;
+        lastStep = now; steps.push(now); totalSteps++; pending++;
       }
     }
   }
@@ -126,6 +128,8 @@ function tick() {
   const spm = spmNow(now);
   cur = spm === 0 ? 'STOP' : spm >= thr ? 'RUN' : 'WALK';
   sec[cur] += dt;
+  // steps of the last second go to the current state (first steps after a stop count as walking)
+  stepsBy[cur === 'RUN' ? 'RUN' : 'WALK'] += pending; pending = 0;
   render(spm, now);
 }
 
@@ -135,6 +139,7 @@ function render(spm, now) {
   $('spm').textContent = (spm ? Math.round(spm) : '—') + ' צעדים/דקה';
   $('tRun').textContent = fmt(sec.RUN); $('tWalk').textContent = fmt(sec.WALK);
   $('steps').textContent = totalSteps;
+  $('sRun').textContent = `${stepsBy.RUN} צעדים`; $('sWalk').textContent = `${stepsBy.WALK} צעדים`;
   $('tTot').textContent = fmt(running ? (now - startT)/1000 : sec.RUN + sec.WALK + sec.STOP);
   const mv = sec.RUN + sec.WALK, pr = mv ? sec.RUN / mv * 100 : 0;
   $('bRun').style.width = pr + '%'; $('bWalk').style.width = (mv ? 100 - pr : 0) + '%';
@@ -151,7 +156,7 @@ async function start() {
     try { if (await DeviceMotionEvent.requestPermission() !== 'granted') return showErr('לא ניתנה הרשאה לחיישן התנועה.'); }
     catch(e) { return showErr('לא ניתנה הרשאה לחיישן התנועה.'); }
   }
-  steps = []; totalSteps = 0; sec = {RUN:0, WALK:0, STOP:0}; cur = 'STOP';
+  steps = []; totalSteps = 0; stepsBy = {RUN:0, WALK:0}; pending = 0; sec = {RUN:0, WALK:0, STOP:0}; cur = 'STOP';
   lp = avg = 9.8; above = false; lastStep = 0;
   let got = false;
   const probe = () => { got = true; window.removeEventListener('devicemotion', probe); };
@@ -166,11 +171,12 @@ async function start() {
 
 function stop() {
   running = false; clearInterval(timer);
+  stepsBy[cur === 'RUN' ? 'RUN' : 'WALK'] += pending; pending = 0;
   window.removeEventListener('devicemotion', onMotion);
   try { wake?.release(); } catch(e) {} wake = null;
   $('go').textContent = 'התחל'; $('go').className = '';
   const mv = sec.RUN + sec.WALK;
-  if (mv > 10) saveHist({d: Date.now(), run: sec.RUN, walk: sec.WALK, stop: sec.STOP, steps: totalSteps});
+  if (mv > 10) saveHist({d: Date.now(), run: sec.RUN, walk: sec.WALK, stop: sec.STOP, steps: totalSteps, sr: stepsBy.RUN, sw: stepsBy.WALK});
   render(0, performance.now());
 }
 
@@ -188,7 +194,8 @@ function drawHist() {
   $('hist').innerHTML = h.length ? h.map(r => {
     const mv = r.run + r.walk, p = mv ? Math.round(r.run / mv * 100) : 0;
     const dt = new Date(r.d).toLocaleString('he-IL', {day:'numeric', month:'numeric', hour:'2-digit', minute:'2-digit'});
-    return `<li><span>${dt}</span><span>ריצה <b>${fmt(r.run)}</b> · הליכה ${fmt(r.walk)} · <b>${p}%</b></span></li>`;
+    const st = r.sr != null ? `<span>צעדים: ריצה <b>${r.sr}</b> · הליכה ${r.sw}</span>` : '';
+    return `<li><span>${dt}</span><span>ריצה <b>${fmt(r.run)}</b> · הליכה ${fmt(r.walk)} · <b>${p}%</b></span>${st}</li>`;
   }).join('') : '<li>עדיין אין אימונים</li>';
 }
 $('clr').onclick = () => { try { localStorage.removeItem('hist'); } catch(e) {} drawHist(); };
